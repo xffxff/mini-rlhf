@@ -102,6 +102,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_path, fast_tokenizer=True)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
+#################### prepare dataset ####################
 data_path = "../huggingface/datasets/Dahoas/rm-static"
 
 # `data_split` is a string of comma separated numbers, e.g. "2,4,4",
@@ -133,6 +134,7 @@ eval_dataloader = DataLoader(
     batch_size=eval_batch_size,
 )
 
+#################### prepare model ####################
 model_config = AutoConfig.from_pretrained(model_path)
 model = AutoModelForCausalLM.from_pretrained(model_path, config=model_config)
 model.config.end_token_id = tokenizer.eos_token_id
@@ -142,13 +144,7 @@ model.resize_token_embeddings(
 )  # make the vocab size multiple of 8
 
 
-device = "cuda"
-learning_rate = 1e-5
-
-model.to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-
+#################### training loop ####################
 def to_device(batch, device):
     output = {}
     for k, v in batch.items():
@@ -159,7 +155,7 @@ def to_device(batch, device):
     return output
 
 
-def evaluation(model, eval_dataloader):
+def evaluation(model, eval_dataloader, device):
     model.eval()
     losses = 0
     for step, batch in enumerate(eval_dataloader):
@@ -177,12 +173,17 @@ def evaluation(model, eval_dataloader):
     return perplexity
 
 
+device = "cuda"
+learning_rate = 1e-5
+
+model.to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 num_train_epochs = 1
 print("***** Running training *****")
 print(
     f"***** Evaluating perplexity, Epoch {0}/{num_train_epochs} *****",
 )
-perplexity = evaluation(model, eval_dataloader)
+perplexity = evaluation(model, eval_dataloader, device)
 print(f"ppl: {perplexity}")
 
 for epoch in range(num_train_epochs):
@@ -205,10 +206,11 @@ for epoch in range(num_train_epochs):
 
     # Evaluate perplexity on the validation set.
     print(f"***** Evaluating perplexity, Epoch {epoch+1}/{num_train_epochs} *****")
-    perplexity = evaluation(model, eval_dataloader)
+    perplexity = evaluation(model, eval_dataloader, device)
     print(f"ppl: {perplexity}")
 
 
+#################### save model ####################
 def save_hf_format(model, tokenizer, output_dir, sub_folder=""):
     # used to save huggingface format, so we can use it for hf.from_pretrained
     model_to_save = model.module if hasattr(model, "module") else model
