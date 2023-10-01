@@ -79,13 +79,6 @@ def create_dataset_split(dataset, tokenizer, end_of_conversation_token, max_seq_
 def create_dataset(
     dataset_name, data_split, tokenizer, end_of_conversation_token, max_seq_len
 ):
-    """
-    create the dataset for sft based on the data_split.
-    For example, if data_split is "2,4,4", then the dataset will be split into 3 parts,
-    and the first part will be 2/(2+4+4) of the whole dataset, and the second part
-    will be 4/(2+4+4) of the whole dataset, and so on. For sft, we only use the first
-    part of the split.
-    """
     raw_dataset = datasets.load_from_disk(dataset_name)
     train_dataset = raw_dataset["train"]
     train_index = get_raw_dataset_split_index(data_split, 0, len(train_dataset))
@@ -103,12 +96,42 @@ def create_dataset(
     return train_dataset, eval_dataset
 
 
-data_path = "../huggingface/datasets/Dahoas/rm-static"
 model_path = "../huggingface/models/facebook/opt-350m"
 
 tokenizer = AutoTokenizer.from_pretrained(model_path, fast_tokenizer=True)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
+
+data_path = "../huggingface/datasets/Dahoas/rm-static"
+
+# `data_split` is a string of comma separated numbers, e.g. "2,4,4",
+# which means the dataset will be split into 3 parts, and the first
+# part will be 2/(2+4+4) of the whole dataset, and the second part
+# will be 4/(2+4+4) of the whole dataset, and so on.
+# For sft, we only use the first part of the split.
+data_split = "2,4,4"
+end_of_conversation_token = "<|endoftext|>"
+max_seq_len = 512
+train_dataset, eval_dataset = create_dataset(
+    data_path, data_split, tokenizer, end_of_conversation_token, max_seq_len
+)
+
+train_batch_size = 16
+eval_batch_size = 16
+train_sampler = RandomSampler(train_dataset)
+eval_sampler = SequentialSampler(eval_dataset)
+train_dataloader = DataLoader(
+    train_dataset,
+    collate_fn=default_data_collator,
+    sampler=train_sampler,
+    batch_size=train_batch_size,
+)
+eval_dataloader = DataLoader(
+    eval_dataset,
+    collate_fn=default_data_collator,
+    sampler=eval_sampler,
+    batch_size=eval_batch_size,
+)
 
 model_config = AutoConfig.from_pretrained(model_path)
 model = AutoModelForCausalLM.from_pretrained(model_path, config=model_config)
@@ -118,35 +141,12 @@ model.resize_token_embeddings(
     int(8 * math.ceil(len(tokenizer) / 8.0))
 )  # make the vocab size multiple of 8
 
-# prepare the dataset
-device = "cuda"
-train_dataset, eval_dataset = create_dataset(
-    data_path,
-    "2,4,4",
-    tokenizer,
-    "<|endoftext|>",
-    512,
-)
 
-per_device_train_batch_size = 16
-per_device_eval_batch_size = 16
-train_sampler = RandomSampler(train_dataset)
-eval_sampler = SequentialSampler(eval_dataset)
-train_dataloader = DataLoader(
-    train_dataset,
-    collate_fn=default_data_collator,
-    sampler=train_sampler,
-    batch_size=per_device_train_batch_size,
-)
-eval_dataloader = DataLoader(
-    eval_dataset,
-    collate_fn=default_data_collator,
-    sampler=eval_sampler,
-    batch_size=per_device_eval_batch_size,
-)
+device = "cuda"
+learning_rate = 1e-5
 
 model.to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
 
 def to_device(batch, device):
