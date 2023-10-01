@@ -1,7 +1,7 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import os
 import math
-from data_utils import create_prompt_dataset
+from data_utils import create_dataset
 import torch
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from transformers import default_data_collator
@@ -24,17 +24,14 @@ model.resize_token_embeddings(int(
 
 train_phase = 1
 device = "cuda"
-train_dataset, eval_dataset = create_prompt_dataset(
-    -1,
-    [data_path],
+train_dataset, eval_dataset = create_dataset(
+    data_path,
     "2,4,4",
-    "output",
     train_phase,
-    0,
     tokenizer,
+    "<|endoftext|>",
     512,
-    device,
-    sft_only_data_path=[])
+)
 
 per_device_train_batch_size = 16
 per_device_eval_batch_size = 16
