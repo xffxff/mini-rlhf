@@ -128,9 +128,9 @@ for epoch in range(num_train_epochs):
     perplexity = evaluation(model, eval_dataloader)
     print(f"ppl: {perplexity}")
 
-output_dir = "./output/model"
-if output_dir is not None:
-    print('saving the final model ...')
+# output_dir = "./output/model"
+# if output_dir is not None:
+#     print('saving the final model ...')
 
-    save_hf_format(model, tokenizer, output_dir)
+#     save_hf_format(model, tokenizer, output_dir)
 
