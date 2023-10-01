@@ -96,14 +96,18 @@ def create_dataset(
     return train_dataset, eval_dataset
 
 
-model_path = "../huggingface/models/facebook/opt-350m"
+import sys
+
+assert len(sys.argv) == 3, "Please provide the model path and data path."
+
+model_path = sys.argv[1]
 
 tokenizer = AutoTokenizer.from_pretrained(model_path, fast_tokenizer=True)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
 #################### prepare dataset ####################
-data_path = "../huggingface/datasets/Dahoas/rm-static"
+data_path = sys.argv[2]
 
 # `data_split` is a string of comma separated numbers, e.g. "2,4,4",
 # which means the dataset will be split into 3 parts, and the first
