@@ -1,4 +1,6 @@
 from transformers import AutoTokenizer, AutoConfig, AutoModel
+from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+from transformers import default_data_collator
 import math
 import sys
 import torch
@@ -316,4 +318,21 @@ end_of_conversation_token = "<|endoftext|>"
 max_seq_len = 512
 train_dataset, eval_dataset = create_dataset(
     data_path, data_split, tokenizer, end_of_conversation_token, max_seq_len
+)
+
+train_batch_size = 16
+eval_batch_size = 16
+train_sampler = RandomSampler(train_dataset)
+eval_sampler = SequentialSampler(eval_dataset)
+train_dataloader = DataLoader(
+    train_dataset,
+    collate_fn=default_data_collator,
+    sampler=train_sampler,
+    batch_size=train_batch_size,
+)
+eval_dataloader = DataLoader(
+    eval_dataset,
+    collate_fn=default_data_collator,
+    sampler=eval_sampler,
+    batch_size=eval_batch_size,
 )
