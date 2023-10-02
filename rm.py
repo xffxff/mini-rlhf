@@ -1,6 +1,5 @@
 from transformers import AutoTokenizer, AutoConfig, AutoModel
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
-from transformers import default_data_collator
 import math
 import sys
 import torch
@@ -60,7 +59,7 @@ class RewardModel(nn.Module):
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
-            **kwargs
+            **kwargs,
         )
 
         hidden_states = transformer_outputs[0]
@@ -152,7 +151,7 @@ class RewardModel(nn.Module):
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
-            **kwargs
+            **kwargs,
         )
         hidden_states = transformer_outputs[0]
         values = self.v_head(hidden_states).squeeze(-1)
@@ -288,6 +287,18 @@ def create_dataset(
     return train_dataset, eval_dataset
 
 
+class DataCollatorReward:
+    def __call__(self, data):
+        batch = {}
+        batch["input_ids"] = torch.cat(
+            [f[0] for f in data] + [f[2] for f in data], dim=0
+        )
+        batch["attention_mask"] = torch.cat(
+            [f[1] for f in data] + [f[3] for f in data], dim=0
+        )
+        return batch
+
+
 model_path = sys.argv[1]
 
 tokenizer = AutoTokenizer.from_pretrained(model_path, fast_tokenizer=True)
@@ -303,7 +314,7 @@ model.resize_token_embeddings(
     int(8 * math.ceil(len(tokenizer) / 8.0))
 )  # make the vocab size multiple of 8
 
-reward_model = RewardModel(model, tokenizer, num_padding_at_beginning=1)
+rm_model = RewardModel(model, tokenizer, num_padding_at_beginning=1)
 
 #################### prepare dataset ####################
 data_path = sys.argv[2]
@@ -324,15 +335,93 @@ train_batch_size = 16
 eval_batch_size = 16
 train_sampler = RandomSampler(train_dataset)
 eval_sampler = SequentialSampler(eval_dataset)
+data_collector = DataCollatorReward()
 train_dataloader = DataLoader(
     train_dataset,
-    collate_fn=default_data_collator,
+    collate_fn=data_collector,
     sampler=train_sampler,
     batch_size=train_batch_size,
 )
 eval_dataloader = DataLoader(
     eval_dataset,
-    collate_fn=default_data_collator,
+    collate_fn=data_collector,
     sampler=eval_sampler,
     batch_size=eval_batch_size,
 )
+
+
+def to_device(batch, device):
+    output = {}
+    for k, v in batch.items():
+        try:
+            output[k] = v.to(device)
+        except:
+            output[k] = v
+    return output
+
+
+def evaluation_reward(model, eval_dataloader, device):
+    model.eval()
+    correct_predictions = 0
+    total_predictions = 0
+    scores = 0
+    for step, batch in enumerate(eval_dataloader):
+        batch = to_device(batch, device)
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        chosen = outputs["chosen_mean_scores"]
+        rejected = outputs["rejected_mean_scores"]
+        correct_predictions += (chosen > rejected).sum()
+        total_predictions += chosen.shape[0]
+        scores += outputs["chosen_mean_scores"].mean().float()
+        if step == 99:  # For faster evaluation and debugging
+            break
+    acc = correct_predictions / total_predictions
+    scores = scores / (step + 1)
+    return scores, acc
+
+
+device = "cuda"
+learning_rate = 1e-5
+
+rm_model.to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+num_train_epochs = 1
+
+print("***** Running training *****")
+
+print(
+    f"***** Evaluating reward, Epoch {0}/{num_train_epochs} *****",
+)
+reward_score, acc = evaluation_reward(rm_model, eval_dataloader, device)
+print(
+    f"chosen_last_scores (higher is better) : {reward_score}, acc (higher is better) : {acc}",
+)
+
+for epoch in range(num_train_epochs):
+    print(
+        f"Beginning of Epoch {epoch+1}/{num_train_epochs}, Total Micro Batches {len(train_dataloader)}",
+    )
+    rm_model.train()
+    mean_loss = 0
+    for step, batch in enumerate(train_dataloader):
+        batch = to_device(batch, device)
+        outputs = rm_model(**batch, use_cache=False)
+        loss = outputs["loss"]
+        print(f"Epoch: {epoch}, Step: {step}, loss = {loss}")
+        loss.backward()
+        optimizer.step()
+        mean_loss += loss.item()
+    print(
+        f"Epoch {epoch+1}/{num_train_epochs} with loss {mean_loss/(step+1)}",
+    )
+    # Evaluate reward_loss on the validation set.
+    print(
+        f"***** Evaluating reward, Epoch {epoch+1}/{num_train_epochs} *****",
+    )
+    reward_score, acc = evaluation_reward(rm_model, eval_dataloader, device)
+    print(
+        f"chosen_last_scores (higher is better) : {reward_score}, acc (higher is better) : {acc}",
+    )
+    rm_model.tput_timer.update_epoch_count()
