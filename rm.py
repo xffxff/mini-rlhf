@@ -376,7 +376,7 @@ def evaluation_reward(model, eval_dataloader, device):
         correct_predictions += (chosen > rejected).sum()
         total_predictions += chosen.shape[0]
         scores += outputs["chosen_mean_scores"].mean().float()
-        if step == 50:  # For faster evaluation and debugging
+        if step == 99:  # For faster evaluation and debugging
             break
     acc = correct_predictions / total_predictions
     scores = scores / (step + 1)
@@ -384,10 +384,10 @@ def evaluation_reward(model, eval_dataloader, device):
 
 
 device = "cuda"
-learning_rate = 1e-5
+learning_rate = 5e-5
 
 rm_model.to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+optimizer = torch.optim.Adam(rm_model.parameters(), lr=learning_rate)
 num_train_epochs = 1
 
 print("***** Running training *****")
@@ -412,6 +412,7 @@ for epoch in range(num_train_epochs):
         loss = outputs["loss"]
         loss.backward()
         optimizer.step()
+        optimizer.zero_grad()
         print(f"Epoch: {epoch}, Step: {step}, loss = {loss}")
 
         if step > 0 and step % 100 == 0:
