@@ -41,9 +41,10 @@ def get_raw_dataset_split_index(data_split, split_index, data_size):
 
 
 class PromptDataset(Dataset):
-    def __init__(self, prompt_dataset) -> None:
+    def __init__(self, prompt_dataset, pad_token_id) -> None:
         super().__init__()
         self.prompt_dataset = prompt_dataset
+        self.pad_token_id = pad_token_id
 
     def __len__(self):
         length = len(self.prompt_dataset)
@@ -78,7 +79,7 @@ def create_dataset_split(dataset, tokenizer, end_of_conversation_token, max_seq_
                     y = prompt_token[key_word].squeeze(0).flip(0)
                 prompt_token[key_word] = y
             prompt_dataset.append(prompt_token)
-    return PromptDataset(prompt_dataset)
+    return PromptDataset(prompt_dataset, tokenizer.pad_token_id)
 
 
 def create_dataset(
@@ -192,3 +193,127 @@ critic_model.to(device)
 reward_model = create_hf_model(AutoModel, critic_model_name_or_path, tokenizer)
 reward_model = RewardModel(reward_model, tokenizer, num_padding_at_beginning)
 reward_model.to(device)
+
+
+#################### training loop ####################
+
+
+def gather_log_probs(logits, labels):
+    log_probs = F.log_softmax(logits, dim=-1)
+    log_probs_labels = log_probs.gather(dim=-1, index=labels.unsqueeze(-1))
+    return log_probs_labels.squeeze(-1)
+
+
+class PPOTrainer:
+    def __init__(
+        self,
+        actor_model,
+        ref_model,
+        critic_model,
+        reward_model,
+        tokenizer,
+        max_answer_seq_len,
+    ):
+        self.actor_model = actor_model
+        self.ref_model = ref_model
+        self.critic_model = critic_model
+        self.reward_model = reward_model
+        self.tokenizer = tokenizer
+        self.max_answer_seq_len = max_answer_seq_len
+
+    def eval(self):
+        self.actor_model.eval()
+        self.ref_model.eval()
+        self.critic_model.eval()
+        self.reward_model.eval()
+
+    def train(self):
+        self.actor_model.train()
+        self.ref_model.train()
+        self.critic_model.train()
+        self.reward_model.train()
+
+    def _generate_sequence(self, prompts, mask):
+        max_min_length = self.max_answer_seq_len + prompts.shape[1]
+
+        with torch.no_grad():
+            seq = self.actor_model.generate(
+                prompts,
+                attention_mask=mask,
+                max_length=max_min_length,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
+
+        # Filter out seq with no answers (or very short). This happens when users directly use the pre-training ckpt without supervised finetuning
+        # NOTE: this will causes each GPU has different number of examples
+        batch_size = seq.shape[0]
+        prompt_length = prompts.shape[1]
+        self.prompt_length = prompt_length
+        ans = seq[:, prompt_length:]
+        valid_ans_len = (ans != self.tokenizer.pad_token_id).sum(dim=-1)
+
+        out_seq = []
+        for i in range(batch_size):
+            if valid_ans_len[i] <= 1:  # if the answer is shorter than 1 token, drop it
+                continue
+            else:
+                out_seq.append(seq[i : i + 1])
+        out_seq = torch.cat(out_seq, dim=0)  # concate output in the batch dim
+
+        return out_seq
+
+    def generate_experience(self, prompts, mask):
+        self.eval()
+        seq = self._generate_sequence(prompts, mask)
+        self.train()
+
+        pad_token_id = self.tokenizer.pad_token_id
+        attention_mask = seq.not_equal(pad_token_id).long()
+        with torch.no_grad():
+            output = self.actor_model(seq, attention_mask=attention_mask)
+            output_ref = self.ref_model(seq, attention_mask=attention_mask)
+            reward_score = self.reward_model.forward_value(
+                seq, attention_mask, prompt_length=self.prompt_length
+            )["chosen_end_scores"].detach()
+            values = self.critic_model.forward_value(
+                seq, attention_mask, return_value_only=True
+            ).detach()[:, :-1]
+
+        logits = output.logits
+        logits_ref = output_ref.logits
+
+        return {
+            "prompts": prompts,
+            "logprobs": gather_log_probs(logits[:, :-1, :], seq[:, 1:]),
+            "ref_logprobs": gather_log_probs(logits_ref[:, :-1, :], seq[:, 1:]),
+            "value": values,
+            "rewards": reward_score,
+            "input_ids": seq,
+            "attention_mask": attention_mask,
+        }
+
+
+num_train_epochs = 1
+max_answer_seq_len = 256
+trainer = PPOTrainer(
+    actor_model, ref_model, critic_model, reward_model, tokenizer, max_answer_seq_len
+)
+
+
+def to_device(batch, device):
+    output = {}
+    for k, v in batch.items():
+        try:
+            output[k] = v.to(device)
+        except:
+            output[k] = v
+    return output
+
+
+for epoch in range(num_train_epochs):
+    for step, batch_prompt in enumerate(train_dataloader):
+        batch_prompt = to_device(batch_prompt, device)
+        out = trainer.generate_experience(
+            batch_prompt["prompt"], batch_prompt["prompt_att_mask"]
+        )
+        print(out)
