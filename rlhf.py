@@ -1,10 +1,13 @@
 from transformers import AutoTokenizer
 from torch.utils.data import DataLoader, RandomSampler
+from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM, AutoModel
+import math
 import sys
 import datasets
 from torch.utils.data import Dataset, Subset
 from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
+from rm import RewardModel
 
 
 def get_raw_dataset_split_index(data_split, split_index, data_size):
@@ -33,7 +36,7 @@ def get_raw_dataset_split_index(data_split, split_index, data_size):
     for i in range(data_size):
         if i >= splits_index[split_index] and i < splits_index[split_index + 1]:
             res.append(i)
-    return res
+    return res[:1000]  # only use the first 1000 samples for debugging
 
 
 class PromptDataset(Dataset):
@@ -123,16 +126,15 @@ class DataCollatorRLHF:
         return batch
 
 
-assert len(sys.argv) == 3, "Please provide the model path and data path."
+actor_model_name_or_path = sys.argv[1]
+critic_model_name_or_path = sys.argv[2]
 
-model_path = sys.argv[1]
-
-tokenizer = AutoTokenizer.from_pretrained(model_path, fast_tokenizer=True)
+tokenizer = AutoTokenizer.from_pretrained(actor_model_name_or_path, fast_tokenizer=True)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
 #################### prepare dataset ####################
-data_path = sys.argv[2]
+data_path = sys.argv[3]
 
 # `data_split` is a string of comma separated numbers, e.g. "2,4,4",
 # which means the dataset will be split into 3 parts, and the first
@@ -155,3 +157,27 @@ train_dataloader = DataLoader(
     sampler=train_sampler,
     batch_size=per_device_generation_batch_size,
 )
+
+
+#################### prepare model ####################
+def create_hf_model(model_class, model_name_or_path, tokenizer):
+    model_config = AutoConfig.from_pretrained(actor_model_name_or_path)
+    model = model_class.from_pretrained(actor_model_name_or_path, config=model_config)
+    model.config.end_token_id = tokenizer.eos_token_id
+    model.config.pad_token_id = model.config.eos_token_id
+    model.resize_token_embeddings(
+        int(8 * math.ceil(len(tokenizer) / 8.0))
+    )  # make the vocab size multiple of 8
+    return model
+
+
+num_padding_at_beginning = 1
+
+actor_model = create_hf_model(AutoModelForCausalLM, actor_model_name_or_path, tokenizer)
+ref_model = create_hf_model(AutoModelForCausalLM, actor_model_name_or_path, tokenizer)
+
+critic_model = create_hf_model(AutoModel, critic_model_name_or_path, tokenizer)
+critic_model = RewardModel(critic_model, tokenizer, num_padding_at_beginning)
+
+reward_model = create_hf_model(AutoModel, critic_model_name_or_path, tokenizer)
+reward_model = RewardModel(reward_model, tokenizer, num_padding_at_beginning)
