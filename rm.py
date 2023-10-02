@@ -388,7 +388,7 @@ learning_rate = 1e-5
 
 rm_model.to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-num_train_epochs = 0
+num_train_epochs = 1
 
 print("***** Running training *****")
 
