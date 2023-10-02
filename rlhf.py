@@ -1,6 +1,7 @@
 from transformers import AutoTokenizer
 from torch.utils.data import DataLoader, RandomSampler
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM, AutoModel
+import torch
 import math
 import sys
 import datasets
@@ -172,12 +173,22 @@ def create_hf_model(model_class, model_name_or_path, tokenizer):
 
 
 num_padding_at_beginning = 1
+actor_learning_rate = 1e-5
+critic_learning_rate = 1e-5
+device = "cuda"
 
 actor_model = create_hf_model(AutoModelForCausalLM, actor_model_name_or_path, tokenizer)
+actor_optimizer = torch.optim.AdamW(actor_model.parameters(), lr=actor_learning_rate)
+actor_model.to(device)
+
 ref_model = create_hf_model(AutoModelForCausalLM, actor_model_name_or_path, tokenizer)
+ref_model.to(device)
 
 critic_model = create_hf_model(AutoModel, critic_model_name_or_path, tokenizer)
 critic_model = RewardModel(critic_model, tokenizer, num_padding_at_beginning)
+critic_optimizer = torch.optim.AdamW(critic_model.parameters(), lr=critic_learning_rate)
+critic_model.to(device)
 
 reward_model = create_hf_model(AutoModel, critic_model_name_or_path, tokenizer)
 reward_model = RewardModel(reward_model, tokenizer, num_padding_at_beginning)
+reward_model.to(device)
