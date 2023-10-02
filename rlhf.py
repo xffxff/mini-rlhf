@@ -1,7 +1,10 @@
 from transformers import AutoTokenizer
+from torch.utils.data import DataLoader, RandomSampler
 import sys
 import datasets
 from torch.utils.data import Dataset, Subset
+from torch.nn.utils.rnn import pad_sequence
+import torch.nn.functional as F
 
 
 def get_raw_dataset_split_index(data_split, split_index, data_size):
@@ -87,6 +90,39 @@ def create_dataset(
     return train_dataset
 
 
+class DataCollatorRLHF:
+    def __init__(self, max_token_len):
+        self.max_token_len = max_token_len
+
+    def __call__(self, data):
+        batch = {}
+        pad_token_id = data[-1][-1]
+
+        prompt = pad_sequence(
+            [f[0] for f in data], padding_value=pad_token_id, batch_first=True
+        )
+        prompt_mask = pad_sequence(
+            [f[1] for f in data], padding_value=0, batch_first=True
+        )
+
+        ### make sure the final ouput is a seqence of 2**?
+        length = prompt.size()[-1]
+        pad_length = self.max_token_len - length
+        if pad_length > 0:
+            batch["prompt"] = F.pad(
+                prompt, pad=(0, pad_length), mode="constant", value=pad_token_id
+            )
+            batch["prompt_att_mask"] = F.pad(
+                prompt_mask, pad=(0, pad_length), mode="constant", value=0
+            )
+        else:
+            batch["prompt"] = prompt
+            batch["prompt_att_mask"] = prompt_mask
+        batch["prompt"] = batch["prompt"].flip(1)
+        batch["prompt_att_mask"] = batch["prompt_att_mask"].flip(1)
+        return batch
+
+
 assert len(sys.argv) == 3, "Please provide the model path and data path."
 
 model_path = sys.argv[1]
@@ -105,7 +141,17 @@ data_path = sys.argv[2]
 # For sft, we only use the first part of the split.
 data_split = "2,4,4"
 end_of_conversation_token = "<|endoftext|>"
-max_seq_len = 512
+max_seq_len = 256
 train_dataset = create_dataset(
     data_path, data_split, tokenizer, end_of_conversation_token, max_seq_len
+)
+
+data_collector = DataCollatorRLHF(max_seq_len)
+train_sampler = RandomSampler(train_dataset)
+per_device_generation_batch_size = 16
+train_dataloader = DataLoader(
+    train_dataset,
+    collate_fn=data_collector,
+    sampler=train_sampler,
+    batch_size=per_device_generation_batch_size,
 )
