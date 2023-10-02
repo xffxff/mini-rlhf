@@ -84,14 +84,7 @@ def create_dataset(
     train_dataset = create_dataset_split(
         train_dataset, tokenizer, end_of_conversation_token, max_seq_len
     )
-
-    eval_dataset = raw_dataset["test"]
-    eval_index = get_raw_dataset_split_index(data_split, 2, len(eval_dataset))
-    eval_dataset = Subset(eval_dataset, eval_index)
-    eval_dataset = create_dataset_split(
-        eval_dataset, tokenizer, end_of_conversation_token, max_seq_len
-    )
-    return train_dataset, eval_dataset
+    return train_dataset
 
 
 assert len(sys.argv) == 3, "Please provide the model path and data path."
@@ -113,6 +106,6 @@ data_path = sys.argv[2]
 data_split = "2,4,4"
 end_of_conversation_token = "<|endoftext|>"
 max_seq_len = 512
-train_dataset, eval_dataset = create_dataset(
+train_dataset = create_dataset(
     data_path, data_split, tokenizer, end_of_conversation_token, max_seq_len
 )
