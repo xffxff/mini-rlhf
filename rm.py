@@ -1,6 +1,7 @@
 from transformers import AutoTokenizer, AutoConfig, AutoModel
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 import math
+import os
 import sys
 import torch
 from torch import nn
@@ -387,7 +388,7 @@ learning_rate = 1e-5
 
 rm_model.to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-num_train_epochs = 1
+num_train_epochs = 0
 
 print("***** Running training *****")
 
@@ -413,7 +414,7 @@ for epoch in range(num_train_epochs):
         optimizer.step()
         print(f"Epoch: {epoch}, Step: {step}, loss = {loss}")
 
-        if step % 100 == 0:
+        if step > 0 and step % 100 == 0:
             print(
                 f"***** Evaluating reward, Epoch {epoch+1}/{num_train_epochs} *****",
             )
@@ -435,3 +436,26 @@ for epoch in range(num_train_epochs):
     print(
         f"chosen_last_scores (higher is better) : {reward_score}, acc (higher is better) : {acc}",
     )
+
+
+#################### save model ####################
+def save_hf_format(model, tokenizer, output_dir, sub_folder=""):
+    # used to save huggingface format, so we can use it for hf.from_pretrained
+    model_to_save = model.module if hasattr(model, "module") else model
+    CONFIG_NAME = "config.json"
+    WEIGHTS_NAME = "pytorch_model.bin"
+    output_dir = os.path.join(output_dir, sub_folder)
+    os.makedirs(output_dir, exist_ok=True)
+    output_model_file = os.path.join(output_dir, WEIGHTS_NAME)
+    output_config_file = os.path.join(output_dir, CONFIG_NAME)
+    save_dict = model_to_save.state_dict()
+    torch.save(save_dict, output_model_file)
+    model_to_save.config.to_json_file(output_config_file)
+    tokenizer.save_vocabulary(output_dir)
+
+
+output_dir = "./output/reward_model"
+if output_dir is not None:
+    print("saving the final model ...")
+
+    save_hf_format(model, tokenizer, output_dir)
