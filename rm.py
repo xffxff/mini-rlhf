@@ -375,7 +375,7 @@ def evaluation_reward(model, eval_dataloader, device):
         correct_predictions += (chosen > rejected).sum()
         total_predictions += chosen.shape[0]
         scores += outputs["chosen_mean_scores"].mean().float()
-        if step == 99:  # For faster evaluation and debugging
+        if step == 50:  # For faster evaluation and debugging
             break
     acc = correct_predictions / total_predictions
     scores = scores / (step + 1)
@@ -409,10 +409,21 @@ for epoch in range(num_train_epochs):
         batch = to_device(batch, device)
         outputs = rm_model(**batch, use_cache=False)
         loss = outputs["loss"]
-        print(f"Epoch: {epoch}, Step: {step}, loss = {loss}")
         loss.backward()
         optimizer.step()
+        print(f"Epoch: {epoch}, Step: {step}, loss = {loss}")
+
+        if step % 100 == 0:
+            print(
+                f"***** Evaluating reward, Epoch {epoch+1}/{num_train_epochs} *****",
+            )
+            reward_score, acc = evaluation_reward(rm_model, eval_dataloader, device)
+            print(
+                f"chosen_last_scores (higher is better) : {reward_score}, acc (higher is better) : {acc}",
+            )
+
         mean_loss += loss.item()
+
     print(
         f"Epoch {epoch+1}/{num_train_epochs} with loss {mean_loss/(step+1)}",
     )
@@ -424,4 +435,3 @@ for epoch in range(num_train_epochs):
     print(
         f"chosen_last_scores (higher is better) : {reward_score}, acc (higher is better) : {acc}",
     )
-    rm_model.tput_timer.update_epoch_count()
