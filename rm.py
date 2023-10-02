@@ -3,6 +3,8 @@ import math
 import sys
 import torch
 from torch import nn
+from torch.utils.data import Dataset, Subset
+import datasets
 
 
 ## Note that the following code is modified from
@@ -179,6 +181,111 @@ class RewardModel(nn.Module):
             }
 
 
+def get_raw_dataset_split_index(data_split, split_index, data_size):
+    """
+    params:
+        data_split: a string of comma separated numbers, e.g. "2,4,4",
+            which means the dataset will be split into 3 parts, and the first
+            part will be 2/(2+4+4) of the whole dataset, and the second part
+            will be 4/(2+4+4) of the whole dataset, and so on.
+        split_index: the index of the split to be returned, starting from 0, and should
+            be smaller than the number of splits. This is used to determine which
+            part of the split to be returned.
+        data_size: the size of the whole dataset.
+    return:
+        a list of indices of the split to be returned.
+    """
+    splits = [float(s) for s in data_split.split(",")]
+    splits_sum = sum(splits)
+    splits = [split / splits_sum for split in splits]
+
+    splits_index = [0]
+    for index, split in enumerate(splits):
+        splits_index.append(splits_index[index] + int(round(split * float(data_size))))
+
+    res = []
+    for i in range(data_size):
+        if i >= splits_index[split_index] and i < splits_index[split_index + 1]:
+            res.append(i)
+    return res
+
+
+class PromptDataset(Dataset):
+    def __init__(self, chosen_dataset, reject_dataset) -> None:
+        super().__init__()
+        self.chosen_dataset = chosen_dataset
+        self.reject_dataset = reject_dataset
+
+    def __len__(self):
+        length = len(self.chosen_dataset)
+        return length
+
+    def __getitem__(self, idx):
+        return (
+            self.chosen_dataset[idx]["input_ids"],
+            self.chosen_dataset[idx]["attention_mask"],
+            self.reject_dataset[idx]["input_ids"],
+            self.reject_dataset[idx]["attention_mask"],
+        )
+
+
+def create_dataset_split(dataset, tokenizer, end_of_conversation_token, max_seq_len):
+    chosen_dataset = []
+    reject_dataset = []
+    for i, tmp_data in enumerate(dataset):
+        # tokenize the text
+        chosen_sentence = tmp_data["prompt"] + tmp_data["chosen"]  # the accept response
+        reject_sentence = (
+            tmp_data["prompt"] + tmp_data["rejected"]
+        )  # the accept response
+        if chosen_sentence is not None and reject_sentence is not None:
+            chosen_sentence += end_of_conversation_token  # the accept response
+            reject_sentence += end_of_conversation_token
+            chosen_token = tokenizer(
+                chosen_sentence,
+                max_length=max_seq_len,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
+            reject_token = tokenizer(
+                reject_sentence,
+                max_length=max_seq_len,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
+            chosen_token["input_ids"] = chosen_token["input_ids"]
+            chosen_token["attention_mask"] = chosen_token["attention_mask"]
+            chosen_dataset.append(chosen_token)
+
+            reject_token["input_ids"] = reject_token["input_ids"]
+            reject_token["attention_mask"] = reject_token["attention_mask"]
+            reject_dataset.append(reject_token)
+
+    return PromptDataset(chosen_dataset, reject_dataset)
+
+
+def create_dataset(
+    dataset_name, data_split, tokenizer, end_of_conversation_token, max_seq_len
+):
+    raw_dataset = datasets.load_from_disk(dataset_name)
+    train_dataset = raw_dataset["train"]
+    train_index = get_raw_dataset_split_index(data_split, 1, len(train_dataset))
+    train_dataset = Subset(train_dataset, train_index)
+    train_dataset = create_dataset_split(
+        train_dataset, tokenizer, end_of_conversation_token, max_seq_len
+    )
+
+    eval_dataset = raw_dataset["test"]
+    eval_index = get_raw_dataset_split_index(data_split, 1, len(eval_dataset))
+    eval_dataset = Subset(eval_dataset, eval_index)
+    eval_dataset = create_dataset_split(
+        eval_dataset, tokenizer, end_of_conversation_token, max_seq_len
+    )
+    return train_dataset, eval_dataset
+
+
 model_path = sys.argv[1]
 
 tokenizer = AutoTokenizer.from_pretrained(model_path, fast_tokenizer=True)
@@ -195,3 +302,18 @@ model.resize_token_embeddings(
 )  # make the vocab size multiple of 8
 
 reward_model = RewardModel(model, tokenizer, num_padding_at_beginning=1)
+
+#################### prepare dataset ####################
+data_path = sys.argv[2]
+
+# `data_split` is a string of comma separated numbers, e.g. "2,4,4",
+# which means the dataset will be split into 3 parts, and the first
+# part will be 2/(2+4+4) of the whole dataset, and the second part
+# will be 4/(2+4+4) of the whole dataset, and so on.
+# For sft, we only use the first part of the split.
+data_split = "2,4,4"
+end_of_conversation_token = "<|endoftext|>"
+max_seq_len = 512
+train_dataset, eval_dataset = create_dataset(
+    data_path, data_split, tokenizer, end_of_conversation_token, max_seq_len
+)
