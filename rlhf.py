@@ -37,7 +37,7 @@ def get_raw_dataset_split_index(data_split, split_index, data_size):
     for i in range(data_size):
         if i >= splits_index[split_index] and i < splits_index[split_index + 1]:
             res.append(i)
-    return res[:1000]  # only use the first 1000 samples for debugging
+    return res
 
 
 class PromptDataset(Dataset):
